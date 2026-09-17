@@ -309,6 +309,15 @@ func (r *Reader) loadAuthors(ctx context.Context, bookID int64) ([]CalibreAuthor
 		if err := rows.Scan(&a.CalibreID, &a.Name, &a.Sort); err != nil {
 			return nil, fmt.Errorf("scan author: %w", err)
 		}
+		// Calibre stores a literal comma in an author name as "|": a comma
+		// separates authors in its comma-joined author columns, and the
+		// authors table keeps that escaping so the joined form stays
+		// unambiguous. Calibre's own read path turns the pipe back into a
+		// comma per author (calibre/db/write.py get_adapter), and both the
+		// name and sort columns carry the escaped form. Doing it here, row by
+		// row, keeps the books_authors_link rows as separate authors (#2666).
+		a.Name = strings.ReplaceAll(a.Name, "|", ",")
+		a.Sort = strings.ReplaceAll(a.Sort, "|", ",")
 		out = append(out, a)
 	}
 	return out, rows.Err()

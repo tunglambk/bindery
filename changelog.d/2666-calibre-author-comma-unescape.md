@@ -1,0 +1,2 @@
+### Fixed
+- **Calibre author names no longer keep the `|` Calibre uses for a comma** (#2666): a comma separates authors in Calibre's comma-joined author columns, so a literal comma in a name is stored as `|`, and the Calibre library import copied the column straight through. Authors arrived as `Scalzi| John`, a separate catalogue record that no metadata provider matches, with the sort name mangled the same way. Both columns are now unescaped per author row, the way Calibre's own readers do it; a book with co-authors still imports them as separate authors.

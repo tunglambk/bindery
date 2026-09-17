@@ -282,6 +282,80 @@ func TestReader_Books_FullShape(t *testing.T) {
 	}
 }
 
+// TestReader_Books_UnescapesAuthorCommas is the regression for #2666. Calibre
+// writes a literal comma in an author name as "|" because a comma separates
+// authors in its comma-joined author columns, and its own readers turn the
+// pipe back into a comma (calibre/db/write.py get_adapter). Both the name and
+// the sort column carry the escaped form, and the unescaping has to stay
+// inside one author row so a co-author pair is still two authors.
+func TestReader_Books_UnescapesAuthorCommas(t *testing.T) {
+	root := buildFixtureLibrary(t)
+	db, err := sql.Open("sqlite", filepath.Join(root, metadataDB))
+	if err != nil {
+		t.Fatalf("open fixture writer: %v", err)
+	}
+	extra := []string{
+		// One escaped comma, in the name and in the sort.
+		`INSERT INTO authors (id, name, sort) VALUES (4, 'Scalzi| John', 'Scalzi| John')`,
+		// No pipe: the name and the real comma in the sort must be left alone.
+		`INSERT INTO authors (id, name, sort) VALUES (5, 'Ursula K. Le Guin', 'Le Guin, Ursula K.')`,
+		// Two authors on one book, both escaped.
+		`INSERT INTO authors (id, name, sort) VALUES (6, 'Gaiman| Neil', 'Gaiman| Neil')`,
+		`INSERT INTO authors (id, name, sort) VALUES (7, 'McKean| Dave', 'McKean| Dave')`,
+		`INSERT INTO books (id, title, sort, path) VALUES (4, 'Old Man''s War', 'Old Man''s War', '')`,
+		`INSERT INTO books (id, title, sort, path) VALUES (5, 'Good Omens', 'Good Omens', '')`,
+		`INSERT INTO books (id, title, sort, path) VALUES (6, 'The Dispossessed', 'The Dispossessed', '')`,
+		`INSERT INTO books_authors_link (book, author) VALUES (4, 4), (5, 6), (5, 7), (6, 5)`,
+	}
+	for _, stmt := range extra {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed %q: %v", stmt, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture writer: %v", err)
+	}
+
+	r, err := OpenReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	byID := map[int64]CalibreBook{}
+	if err := r.Books(context.Background(), func(b CalibreBook) error {
+		byID[b.CalibreID] = b
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Book 4: the escaped comma becomes a comma again in both columns.
+	authors := byID[4].Authors
+	if len(authors) != 1 {
+		t.Fatalf("book 4 authors = %+v, want 1 author", authors)
+	}
+	if authors[0].Name != "Scalzi, John" || authors[0].Sort != "Scalzi, John" {
+		t.Errorf("book 4 author = %+v, want name and sort %q", authors[0], "Scalzi, John")
+	}
+	// Book 6: no pipe to unescape, so the name is unchanged and the comma the
+	// sort form already has stays put.
+	authors = byID[6].Authors
+	if len(authors) != 1 || authors[0].Name != "Ursula K. Le Guin" || authors[0].Sort != "Le Guin, Ursula K." {
+		t.Errorf("book 6 author = %+v, want the stored name and sort unchanged", authors)
+	}
+	// Book 5: two escaped authors stay two authors, each unescaped.
+	authors = byID[5].Authors
+	if len(authors) != 2 {
+		t.Fatalf("book 5 authors = %+v, want 2 separate authors", authors)
+	}
+	names := []string{authors[0].Name, authors[1].Name}
+	sort.Strings(names)
+	if names[0] != "Gaiman, Neil" || names[1] != "McKean, Dave" {
+		t.Errorf("book 5 authors = %v, want the two unescaped names", names)
+	}
+}
+
 // TestReader_Books_StopsOnError: returning an error from the visitor must
 // abort the walk — the importer relies on this to honour context cancel.
 func TestReader_Books_StopsOnError(t *testing.T) {
