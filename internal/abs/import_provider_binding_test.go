@@ -3,19 +3,22 @@ package abs
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/vavallee/bindery/internal/metadata"
 	"github.com/vavallee/bindery/internal/models"
 )
 
-// bindingStubProvider is a minimal provider whose author search can be made to
-// fail, which stubABSMetadataProvider cannot do.
+// bindingStubProvider is a minimal provider whose author search and ISBN
+// lookup can be made to fail, which stubABSMetadataProvider cannot do.
 type bindingStubProvider struct {
-	name    string
-	authors []models.Author
-	err     error
-	full    map[string]*models.Author
+	name        string
+	authors     []models.Author
+	err         error
+	full        map[string]*models.Author
+	isbnErr     error
+	booksByISBN map[string]*models.Book
 }
 
 func (p *bindingStubProvider) Name() string { return p.name }
@@ -37,8 +40,11 @@ func (p *bindingStubProvider) GetBook(context.Context, string) (*models.Book, er
 func (p *bindingStubProvider) GetEditions(context.Context, string) ([]models.Edition, error) {
 	return nil, nil
 }
-func (p *bindingStubProvider) GetBookByISBN(context.Context, string) (*models.Book, error) {
-	return nil, nil
+func (p *bindingStubProvider) GetBookByISBN(_ context.Context, isbn string) (*models.Book, error) {
+	if p.isbnErr != nil {
+		return nil, p.isbnErr
+	}
+	return p.booksByISBN[isbn], nil
 }
 
 const rateLimit429 = "HTTP 429: API rate limit exceeded for tier 'Free'. Try again in 1 seconds."
@@ -115,5 +121,102 @@ func TestABSImportBindsPrimaryRecordEvenWhenAnotherProviderFails(t *testing.T) {
 	}
 	if author == nil || author.ForeignID != "hc:adrian-tchaikovsky" {
 		t.Fatalf("expected the primary's record, got %+v", author)
+	}
+}
+
+// bookBindingISBN is the ISBN the book half of the #2271 guard works with.
+const bookBindingISBN = "9780593135204"
+
+// bookBindingRelinkFixture wires an OpenLibrary primary and a DNB enricher,
+// creates the local book an ABS import would have on hand, and returns it with
+// the item it came from. The row starts on its ABS identity, which is the
+// identity the importer must not overwrite while the primary is down.
+func bookBindingRelinkFixture(t *testing.T, primary, dnb *bindingStubProvider) (*Importer, NormalizedLibraryItem, *models.Book) {
+	t.Helper()
+	importer, _, bookRepo, _, _, _, _, _, _, _ := newABSImporterFixture(t)
+	author := asinTestAuthor(t, importer)
+	importer.meta = metadata.NewAggregator(primary, dnb)
+
+	item := sampleABSItem()
+	item.ISBN = bookBindingISBN
+	book := &models.Book{
+		ForeignID:        "abs:book:" + item.LibraryID + ":" + item.ItemID,
+		AuthorID:         author.ID,
+		Title:            item.Title,
+		SortTitle:        item.Title,
+		Status:           models.BookStatusWanted,
+		MetadataProvider: providerAudiobookshelf,
+	}
+	if err := bookRepo.Create(context.Background(), book); err != nil {
+		t.Fatalf("create book: %v", err)
+	}
+	return importer, item, book
+}
+
+// TestABSImportRefusesBookRelinkOnPrimaryFailure is #2642, the book half of
+// #2271: primary_provider = openlibrary times out, DNB answers the ISBN, and
+// mergeUpstreamBook rewrote book.ForeignID and book.MetadataProvider to DNB's.
+// Once the primary is back, a lookup by its key misses the relinked row, which
+// is where the duplicates come from (#2117, #2271, #2332).
+func TestABSImportRefusesBookRelinkOnPrimaryFailure(t *testing.T) {
+	t.Parallel()
+
+	primary := &bindingStubProvider{name: "openlibrary", isbnErr: errors.New("openlibrary: context deadline exceeded")}
+	dnb := &bindingStubProvider{name: "dnb", booksByISBN: map[string]*models.Book{
+		bookBindingISBN: {
+			ForeignID:        "dnb:1305873874",
+			Title:            "Project Hail Mary",
+			Description:      "A lone astronaut wakes with no memory of who he is and no idea why he is the only survivor.",
+			MetadataProvider: "dnb",
+		},
+	}}
+	importer, item, book := bookBindingRelinkFixture(t, primary, dnb)
+	absForeignID := book.ForeignID
+
+	result, err := importer.enrichBook(context.Background(), asinTestConfig(), item, nil, book)
+	if err != nil {
+		t.Fatalf("enrichBook: %v", err)
+	}
+	if book.ForeignID != absForeignID {
+		t.Errorf("book.ForeignID = %q, want the ABS id %q it came in with, not the fallback's", book.ForeignID, absForeignID)
+	}
+	if book.MetadataProvider != providerAudiobookshelf {
+		t.Errorf("book.MetadataProvider = %q, want %q", book.MetadataProvider, providerAudiobookshelf)
+	}
+	if result.Relinked != 0 {
+		t.Errorf("Relinked = %d, want 0 while the primary is down", result.Relinked)
+	}
+	if msg := strings.Join(result.Messages, "; "); !strings.Contains(msg, "book relink skipped") || !strings.Contains(msg, "did not answer") {
+		t.Errorf("messages = %q, want a book relink skipped reason naming the primary outage", msg)
+	}
+}
+
+// TestABSImportStillRelinksBookWhenPrimaryMerelyMisses guards the other half.
+// #2237 is the case where the primary answers and simply has no record for the
+// ISBN; the fallback's record is then the right one to relink to, and refusing
+// it would stop imports working for anything the primary has never heard of.
+func TestABSImportStillRelinksBookWhenPrimaryMerelyMisses(t *testing.T) {
+	t.Parallel()
+
+	primary := &bindingStubProvider{name: "openlibrary"} // answers, no record
+	dnb := &bindingStubProvider{name: "dnb", booksByISBN: map[string]*models.Book{
+		bookBindingISBN: {
+			ForeignID:        "dnb:1305873874",
+			Title:            "Project Hail Mary",
+			Description:      "A lone astronaut wakes with no memory of who he is and no idea why he is the only survivor.",
+			MetadataProvider: "dnb",
+		},
+	}}
+	importer, item, book := bookBindingRelinkFixture(t, primary, dnb)
+
+	result, err := importer.enrichBook(context.Background(), asinTestConfig(), item, nil, book)
+	if err != nil {
+		t.Fatalf("enrichBook: %v", err)
+	}
+	if book.ForeignID != "dnb:1305873874" {
+		t.Errorf("book.ForeignID = %q, want the fallback's dnb:1305873874", book.ForeignID)
+	}
+	if result.Relinked == 0 {
+		t.Errorf("Relinked = 0, want the fallback relink when the primary answered without the ISBN")
 	}
 }

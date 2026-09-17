@@ -90,6 +90,7 @@ Bindery distinguishes between an item it could not match locally and an item it 
 - Non-visible file paths become metadata-only imports instead of hard failures.
 - Each item has 10 minutes. An item that runs past that is marked failed with a timeout message, logged at WARN, and skipped so the rest of the import continues; a restart resumes after it, and importing again retries it.
 - Ambiguous title matches are not auto-applied.
+- A book whose ISBN only a fallback provider matched is not relinked while your primary metadata provider is not answering. The row keeps the identity it already had, the summary says `book relink skipped` and names the provider that failed, and the next import retries. A primary that answers without the ISBN still lets the fallback's record through.
 
 ## Troubleshooting
 

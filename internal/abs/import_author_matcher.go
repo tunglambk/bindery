@@ -655,8 +655,8 @@ func (i *Importer) lookupUpstreamAuthorUncached(ctx context.Context, name string
 // PrimaryProviderUnavailableError reports that a lookup was abandoned rather
 // than resolved against a fallback provider, because the configured primary
 // did not answer. It is not an import failure: the item still imports, the
-// author simply keeps whatever identity it had instead of being bound to the
-// wrong provider permanently (#2271).
+// author or book simply keeps whatever identity it had instead of being bound
+// to the wrong provider permanently (#2271, #2642).
 type PrimaryProviderUnavailableError struct {
 	Primary string
 	Failed  string

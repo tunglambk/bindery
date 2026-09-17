@@ -146,7 +146,7 @@ ebook-only book to `both`, and because status is derived from the formats still
 missing, the book was then demoted from imported back to wanted while its ebook
 sat on disk and attached (#2169).
 
-The importer distinguishes an *unmatched* item from an *ambiguous* one. When the local matcher finds nothing close, the item is unmatched: the book is created directly (step 4 above) and `enrichBook` performs a confidence-gated upstream lookup. Only an *ambiguous* match — a close-but-uncertain local candidate — is parked in the review queue rather than guessed. The same distinction applies to author resolution.
+The importer distinguishes an *unmatched* item from an *ambiguous* one. When the local matcher finds nothing close, the item is unmatched: the book is created directly (step 4 above) and `enrichBook` performs a confidence-gated upstream lookup. Only an *ambiguous* match — a close-but-uncertain local candidate — is parked in the review queue rather than guessed. The same distinction applies to author resolution. An ISBN match that only a fallback provider returned while the primary was not answering is not relinked: the row keeps its current identity, the result carries a `book relink skipped` reason naming the provider that failed, and the next import retries. A primary that answered without the ISBN still lets the fallback's record through (#2237).
 
 ### Series
 
