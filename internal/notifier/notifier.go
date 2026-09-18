@@ -107,8 +107,8 @@ func normalizeEventPayload(eventType string, payload map[string]interface{}) map
 		}
 	case EventBookAnnounced:
 		// The api package sends the author's name and the joined titles as
-		// message, both already capped and stripped of control characters,
-		// because provider text reaches this payload unreviewed.
+		// message, both already run through SafeText, because provider text
+		// reaches this payload unreviewed.
 		title = "New Books Found"
 		if count, ok := payload["count"].(int); ok && count == 1 {
 			title = "New Book Found"

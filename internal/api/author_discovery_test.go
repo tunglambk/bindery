@@ -256,7 +256,9 @@ func TestShouldAnnounceDiscovered(t *testing.T) {
 }
 
 // S3: provider text is capped and loses control and bidi override characters
-// before it reaches a webhook.
+// before it reaches a webhook. notifier.SafeText drops an invisible override
+// outright instead of replacing it with a space, and neutralises markdown link
+// syntax, so the surrounding text joins and "[" becomes a fullwidth lookalike.
 func TestBookAnnouncedPayload_SanitisesProviderText(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	author := &models.Author{ID: 7, Name: "Evil\u202eAuthor\r\nName"}
@@ -265,11 +267,11 @@ func TestBookAnnouncedPayload_SanitisesProviderText(t *testing.T) {
 		{ID: 2, Title: long, ForeignID: long},
 	}
 	p := bookAnnouncedPayload(author, created)
-	if p["author"] != "Evil Author Name" {
+	if p["author"] != "EvilAuthor Name" {
 		t.Errorf("author = %q", p["author"])
 	}
 	books := p["books"].([]map[string]interface{})
-	if books[0]["title"] != "Line one Line two [31m" {
+	if books[0]["title"] != "Line one Line two\uff3b31m" {
 		t.Errorf("title = %q", books[0]["title"])
 	}
 	if books[0]["foreignId"] != "OL1W" {
@@ -291,6 +293,65 @@ func TestBookAnnouncedPayload_SanitisesProviderText(t *testing.T) {
 				t.Fatalf("control character %U survived in %q", r, s)
 			}
 		}
+	}
+}
+
+// assertInert fails when s still carries a character a chat service reads as a
+// mention, a Slack escape, or markdown link syntax.
+func assertInert(t *testing.T, field, s string) {
+	t.Helper()
+	for _, bad := range []string{"@", "<", ">", "[", "]", "://"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("%s = %q still carries %q", field, s, bad)
+		}
+	}
+}
+
+// The bookAnnounced payload lands in an admin's chat channel and OpenLibrary
+// is publicly editable, so a provider title must not be able to forge a
+// mention, a Slack escape or a masked link (#2676). The scheme text itself
+// survives: without bracket or angle syntax it is inert.
+func TestBookAnnouncedPayload_NeutralisesChatMarkup(t *testing.T) {
+	cases := []struct{ name, title, author, foreign string }{
+		{name: "discord mention", title: "@here new book"},
+		{name: "slack channel escape", title: "<!channel> read this"},
+		{name: "slack link", title: "<https://evil.example|Click me>"},
+		{name: "markdown link", title: "[Free nitro](https://evil.example)"},
+		{name: "javascript scheme", title: "[click](javascript:alert(1))"},
+		{name: "file scheme", title: "[open](file:///etc/passwd)"},
+		{name: "bare url", title: "Free at https://evil.example/login"},
+		{name: "markup in author", title: "Ordinary Title", author: "@everyone"},
+		{name: "markup in foreign id", title: "Ordinary Title", foreign: "OL1W@here"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			authorName := c.author
+			if authorName == "" {
+				authorName = "Ann Leckie"
+			}
+			foreignID := c.foreign
+			if foreignID == "" {
+				foreignID = "OL1W"
+			}
+			p := bookAnnouncedPayload(&models.Author{ID: 7, Name: authorName}, []models.Book{
+				{ID: 1, Title: c.title, ForeignID: foreignID},
+			})
+			books := p["books"].([]map[string]interface{})
+			assertInert(t, "title", books[0]["title"].(string))
+			assertInert(t, "foreignId", books[0]["foreignId"].(string))
+			assertInert(t, "author", p["author"].(string))
+			assertInert(t, "message", p["message"].(string))
+		})
+	}
+	// A title with nothing to neutralise reads exactly as it did before.
+	p := bookAnnouncedPayload(&models.Author{ID: 7, Name: "Ann Leckie"}, []models.Book{
+		{ID: 1, Title: "Dune: Part One", ForeignID: "OL1W"},
+	})
+	if got := p["books"].([]map[string]interface{})[0]["title"]; got != "Dune: Part One" {
+		t.Errorf("ordinary title changed: %q", got)
+	}
+	if got := p["message"]; got != "Dune: Part One" {
+		t.Errorf("ordinary message changed: %q", got)
 	}
 }
 

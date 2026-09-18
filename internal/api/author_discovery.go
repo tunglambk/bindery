@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/vavallee/bindery/internal/models"
 	"github.com/vavallee/bindery/internal/notifier"
@@ -137,8 +135,9 @@ func (h *AuthorHandler) announceDiscoveredBooks(ctx context.Context, author *mod
 
 // bookAnnouncedPayload builds the event payload: the author, the total count,
 // up to bookAnnouncedListLimit books with each one's monitored flag, and a
-// "more" count for the rest. Every provider supplied string is capped and
-// stripped of control characters (S3).
+// "more" count for the rest. Every provider supplied string goes through
+// notifier.SafeText, which caps it, strips control and invisible characters,
+// and neutralises mentions, Slack escapes and markdown links (S3, #2676).
 func bookAnnouncedPayload(author *models.Author, created []models.Book) map[string]interface{} {
 	listed := created
 	if len(listed) > bookAnnouncedListLimit {
@@ -148,11 +147,11 @@ func bookAnnouncedPayload(author *models.Author, created []models.Book) map[stri
 	titles := make([]string, 0, len(listed))
 	for i := range listed {
 		b := &listed[i]
-		title := announceText(b.Title, announceMaxTitleRunes)
+		title := notifier.SafeText(b.Title, announceMaxTitleRunes)
 		entry := map[string]interface{}{
 			"id":        b.ID,
 			"title":     title,
-			"foreignId": announceText(b.ForeignID, announceMaxForeignIDRunes),
+			"foreignId": notifier.SafeText(b.ForeignID, announceMaxForeignIDRunes),
 			"monitored": b.Monitored,
 		}
 		if b.ReleaseDate != nil {
@@ -167,35 +166,13 @@ func bookAnnouncedPayload(author *models.Author, created []models.Book) map[stri
 		message += " and " + strconv.Itoa(more) + " more"
 	}
 	return map[string]interface{}{
-		"author":   announceText(author.Name, announceMaxAuthorRunes),
+		"author":   notifier.SafeText(author.Name, announceMaxAuthorRunes),
 		"authorId": author.ID,
 		"count":    len(created),
 		"books":    books,
 		"more":     more,
 		"message":  message,
 	}
-}
-
-// announceText makes provider text safe to put in a webhook payload: control
-// and bidirectional override characters become spaces, runs of whitespace
-// collapse to one space so a title cannot break a chat message into lines,
-// and the result is cut to maxRunes with an ellipsis.
-func announceText(s string, maxRunes int) string {
-	if !utf8.ValidString(s) {
-		s = strings.ToValidUTF8(s, "")
-	}
-	cleaned := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
-			return ' '
-		}
-		return r
-	}, s)
-	cleaned = strings.Join(strings.Fields(cleaned), " ")
-	if maxRunes > 0 && utf8.RuneCountInString(cleaned) > maxRunes {
-		runes := []rune(cleaned)
-		cleaned = strings.TrimSpace(string(runes[:maxRunes-1])) + "…"
-	}
-	return cleaned
 }
 
 // newWorkIndexes returns the positions in candidates of works the author does
