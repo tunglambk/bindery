@@ -45,18 +45,5 @@ func TestScanLibrary_ChapterTaggedAudiobookReconciles(t *testing.T) {
 
 	s.ScanLibrary(ctx)
 
-	paths, err := books.ListAllBookFilePaths(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, p := range paths {
-		if filepath.Clean(p) == filepath.Clean(trackPath) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("chapter-tagged track was not reconciled to the catalogue book; book_file paths = %v", paths)
-	}
+	assertReconciled(t, books, ctx, trackPath)
 }

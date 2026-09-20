@@ -270,9 +270,13 @@ func TestScanLibrary_FilenameNamingItsBookFolderIsNotFlipped(t *testing.T) {
 }
 
 // fileOwners returns, sorted, the titles of the seeded books the scan
-// attached p to, in any format.
+// attached p to, in any format. A book that tracks the folder holding p owns
+// it too: an audiobook is recorded as its book folder (#2716).
 func fileOwners(t *testing.T, books *db.BookRepo, ctx context.Context, seeded map[string]*models.Book, p string) []string {
 	t.Helper()
+	cleanP := filepath.Clean(p)
+	parent := filepath.Clean(filepath.Dir(cleanP))
+	audio := IsAudioFile(cleanP)
 	var owners []string
 	for title, b := range seeded {
 		files, err := books.ListFiles(ctx, b.ID)
@@ -280,8 +284,10 @@ func fileOwners(t *testing.T, books *db.BookRepo, ctx context.Context, seeded ma
 			t.Fatal(err)
 		}
 		for _, f := range files {
-			if f.Path == p {
+			cleanF := filepath.Clean(f.Path)
+			if cleanF == cleanP || (audio && cleanF == parent) {
 				owners = append(owners, title)
+				break
 			}
 		}
 	}

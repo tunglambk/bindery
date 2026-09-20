@@ -2760,6 +2760,25 @@ func authorTitleFromLayout(path string, roots ...string) (author, title string, 
 	return "", "", false
 }
 
+// reconciledAudiobookPath returns what a reconciled audiobook file should be
+// recorded as in book_files. A track that sits in a book folder of its own is
+// recorded as that folder — the shape the importer writes for an audiobook
+// (SetFormatFilePath with the destination folder) and the shape the
+// unmatched-adoption path registers for a folder unit. The folder is the
+// audiobook, so every track inside it moves and deletes with the book instead
+// of only the one track that happened to match first (#2716).
+//
+// A track with no book folder of its own keeps its own path: directly under the
+// library or audiobook root, or one level down in an author folder, its parent
+// is shared with other books and must not be handed to this one.
+func reconciledAudiobookPath(path string, roots ...string) string {
+	_, title, ok := authorTitleFromLayout(path, roots...)
+	if !ok || title == "" {
+		return path
+	}
+	return filepath.Clean(filepath.Dir(path))
+}
+
 // flipByLayout returns the other reading of a two sided filename whose title
 // side names the author folder it sits in. ParseFilename reads a bare "X - Y"
 // as "Title - Author", so a Readarr named "Christopher Pike - Evil Thirst.epub"
@@ -3167,6 +3186,11 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	// is reset per file and read only in the unmatched branch, where it tells a
 	// supplement-class sidecar apart from a genuine orphan (#2188).
 	var claimBlocked bool
+	// registeredPath is what the file currently being processed is recorded as
+	// in book_files. For an audiobook inside a book folder of its own that is
+	// the folder, not the track that matched (see reconciledAudiobookPath); for
+	// everything else it is the file. Set per file in the loop below.
+	var registeredPath string
 	tryReconcileTitle := func(sb *scanBook, path, cleanPath, normParsed, detectedFmt string) bool {
 		b := sb.book
 		// Length gate: Jaro-Winkler is bounded above by 0.8 + 0.2·(minLen/
@@ -3203,12 +3227,12 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 				"title", b.Title, "path", path, "root", effDir)
 			return false
 		}
-		if err := s.books.AddBookFile(ctx, b.ID, detectedFmt, path); err != nil {
+		if err := s.books.AddBookFile(ctx, b.ID, detectedFmt, registeredPath); err != nil {
 			slog.Error("library scan: failed to update book", "id", b.ID, "error", err)
 			return false
 		}
 		slog.Info("library scan: reconciled book", "title", b.Title, "path", path, "jw", jwScore)
-		trackedPaths[cleanPath] = true
+		trackedPaths[filepath.Clean(registeredPath)] = true
 		if detectedFmt == models.MediaTypeAudiobook {
 			// Sibling tracks of a just-reconciled audiobook folder belong to
 			// this book — count them as tracked, not unmatched.
@@ -3289,6 +3313,14 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 				"path", path, "reason", "ebook-extension file in a folder that holds audio")
 			alreadyTracked++
 			continue
+		}
+
+		// What the file is recorded as in book_files once it reconciles: an
+		// audiobook inside a book folder of its own is the folder, not the
+		// track that matched (see reconciledAudiobookPath).
+		registeredPath = path
+		if detectedFmt == models.MediaTypeAudiobook {
+			registeredPath = reconciledAudiobookPath(path, s.libraryDir, s.audiobookDir)
 		}
 
 		// Parse the filename for title/author hints, then let the folder
@@ -3381,12 +3413,12 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 						"asin", parsed.ASIN, "path", path, "root", effDir)
 					continue
 				}
-				if err := s.books.AddBookFile(ctx, b.ID, detectedFmt, path); err != nil {
+				if err := s.books.AddBookFile(ctx, b.ID, detectedFmt, registeredPath); err != nil {
 					slog.Error("library scan: failed to update book", "id", b.ID, "error", err)
 					continue
 				}
 				slog.Info("library scan: reconciled book via ASIN", "asin", parsed.ASIN, "title", b.Title, "path", path)
-				trackedPaths[cleanPath] = true
+				trackedPaths[filepath.Clean(registeredPath)] = true
 				if detectedFmt == models.MediaTypeAudiobook {
 					trackedPaths[filepath.Clean(filepath.Dir(cleanPath))] = true
 				}
@@ -3438,12 +3470,12 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 			} else if book != nil {
 				effDir := s.effectiveRootForFormat(ctx, authorMap[book.AuthorID], detectedFmt)
 				if pathUnderDir(path, effDir) {
-					if err := s.books.AddBookFile(ctx, book.ID, detectedFmt, path); err != nil {
+					if err := s.books.AddBookFile(ctx, book.ID, detectedFmt, registeredPath); err != nil {
 						slog.Error("library scan: failed to update book via series match", "id", book.ID, "error", err)
 					} else {
 						slog.Info("library scan: reconciled book via series position",
 							"series", parsed.Series, "position", parsed.SeriesNumber, "title", book.Title, "path", path)
-						trackedPaths[cleanPath] = true
+						trackedPaths[filepath.Clean(registeredPath)] = true
 						if detectedFmt == models.MediaTypeAudiobook {
 							trackedPaths[filepath.Clean(filepath.Dir(cleanPath))] = true
 						}

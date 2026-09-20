@@ -93,14 +93,22 @@ func contributorFixture(t *testing.T) (*Scanner, *db.BookRepo, string, context.C
 }
 
 // assertReconciled fails unless want is among the book_file paths on record.
+// An audio file is also reconciled when the folder holding it is on record:
+// the scan now stores a book-folder audiobook as the folder itself (#2716).
 func assertReconciled(t *testing.T, books *db.BookRepo, ctx context.Context, want string) {
 	t.Helper()
 	paths, err := books.ListAllBookFilePaths(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanWant := filepath.Clean(want)
+	wantFolder := ""
+	if IsAudioFile(want) {
+		wantFolder = filepath.Clean(filepath.Dir(want))
+	}
 	for _, p := range paths {
-		if filepath.Clean(p) == filepath.Clean(want) {
+		cleanP := filepath.Clean(p)
+		if cleanP == cleanWant || (wantFolder != "" && cleanP == wantFolder) {
 			return
 		}
 	}

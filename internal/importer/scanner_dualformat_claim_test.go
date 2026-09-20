@@ -74,8 +74,10 @@ func TestScanLibrary_DualFormatFolderAttachesBothInOnePass(t *testing.T) {
 	if got[models.MediaTypeEbook] != filepath.Clean(epub) {
 		t.Errorf("ebook file = %q, want %q (all files: %v)", got[models.MediaTypeEbook], epub, got)
 	}
-	if got[models.MediaTypeAudiobook] != filepath.Clean(m4b) {
-		t.Errorf("audiobook file = %q, want %q (all files: %v)", got[models.MediaTypeAudiobook], m4b, got)
+	// The audiobook is recorded as its book folder, the shape the importer,
+	// reorganize and adoption all use (#2716); the m4b lives inside it.
+	if got[models.MediaTypeAudiobook] != filepath.Clean(dir) {
+		t.Errorf("audiobook path = %q, want %q (all files: %v)", got[models.MediaTypeAudiobook], dir, got)
 	}
 }
 
@@ -191,8 +193,8 @@ func TestScanLibrary_AudiobookSupplementInSamePassNotAttached(t *testing.T) {
 	s.ScanLibrary(ctx)
 
 	got := bookFileFormats(t, books, ctx, book.ID)
-	if got[models.MediaTypeAudiobook] != filepath.Clean(m4b) {
-		t.Errorf("audiobook file = %q, want %q", got[models.MediaTypeAudiobook], m4b)
+	if got[models.MediaTypeAudiobook] != filepath.Clean(dir) {
+		t.Errorf("audiobook path = %q, want %q", got[models.MediaTypeAudiobook], dir)
 	}
 	if p, ok := got[models.MediaTypeEbook]; ok {
 		t.Errorf("audiobook supplement attached as the book's ebook: %q", p)
