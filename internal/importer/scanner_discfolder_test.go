@@ -8,7 +8,7 @@ import (
 	"github.com/vavallee/bindery/internal/models"
 )
 
-// seedDiscSplitAudiobook writes one track into each of discs disc subfolders
+// seedDiscSplitAudiobook writes one track into each of the discs subfolders
 // under <libDir>/<author>/<title>/ and returns the book folder and the disc
 // folders. The tracks carry unreadable tags, so the scan falls back to the
 // folder hierarchy — the layout the reporter has (#2723).
