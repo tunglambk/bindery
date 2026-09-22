@@ -28,6 +28,8 @@ const (
 	OriginBook SearchOrigin = "book"
 	// OriginRecommendation is an accepted recommendation.
 	OriginRecommendation SearchOrigin = "recommendation"
+	// OriginListSync is a Hardcover import-list sync that made a book wanted.
+	OriginListSync SearchOrigin = "list-sync"
 	// OriginRequeue is the automatic re-search after a stalled download was
 	// removed and blocklisted.
 	OriginRequeue SearchOrigin = "requeue"
