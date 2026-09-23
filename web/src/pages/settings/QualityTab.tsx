@@ -201,14 +201,14 @@ function QualityProfileForm({
   // keeps the historical ranking. Only an explicitly enabled block is posted.
   const savedScoring = profile?.audiobookScoring
   const [scoringOn, setScoringOn] = useState(!!savedScoring)
-  const [codecTargets, setCodecTargets] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {}
-    for (const codec of AUDIOBOOK_FORMATS) {
-      const target = savedScoring?.codecTargets?.[codec]
-      initial[codec] = target != null ? String(target) : ''
-    }
-    return initial
-  })
+  // Keyed by codec, so a Map keeps the profile record and the per-codec input
+  // updates off the computed-member-access path. The saved record is folded in
+  // once here; the payload posted back is still a plain Record<string, number>.
+  const [codecTargets, setCodecTargets] = useState<Map<string, string>>(
+    () => new Map<string, string>(
+      Object.entries(savedScoring?.codecTargets ?? {}).map(([codec, target]) => [codec, String(target)] as [string, string]),
+    ),
+  )
   const [tolerance, setTolerance] = useState(savedScoring?.toleranceMiBPerMinute != null ? String(savedScoring.toleranceMiBPerMinute) : '0.2')
   const [sizeWeight, setSizeWeight] = useState(savedScoring?.sizePerMinuteWeight != null ? String(savedScoring.sizePerMinuteWeight) : '10')
   const [grabsWeight, setGrabsWeight] = useState(savedScoring?.grabsWeight != null ? String(savedScoring.grabsWeight) : '10')
@@ -265,15 +265,15 @@ function QualityProfileForm({
         items,
       }
       if (scoringOn) {
-        const targets: Record<string, number> = {}
+        const targets = new Map<string, number>()
         for (const codec of AUDIOBOOK_FORMATS) {
-          const raw = codecTargets[codec]?.trim()
+          const raw = codecTargets.get(codec)?.trim()
           if (!raw) continue
           const n = Number(raw)
-          if (Number.isFinite(n) && n > 0) targets[codec] = n
+          if (Number.isFinite(n) && n > 0) targets.set(codec, n)
         }
         const scoring: AudiobookScoring = {
-          codecTargets: targets,
+          codecTargets: Object.fromEntries(targets),
           toleranceMiBPerMinute: Number(tolerance) || 0,
           sizePerMinuteWeight: Number(sizeWeight) || 0,
         }
@@ -430,9 +430,9 @@ function QualityProfileForm({
                       type="number"
                       min="0"
                       step="0.1"
-                      value={codecTargets[codec]}
+                      value={codecTargets.get(codec) ?? ''}
                       placeholder={t('settings.quality.scoringTargetPlaceholder')}
-                      onChange={e => setCodecTargets(prev => ({ ...prev, [codec]: e.target.value }))}
+                      onChange={e => setCodecTargets(prev => new Map(prev).set(codec, e.target.value))}
                       className={inputCls}
                     />
                   </label>
