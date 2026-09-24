@@ -191,9 +191,10 @@ func preferredAudioEdition(editions []models.Edition) (models.Edition, bool) {
 // deriveAudiobookMetadataFromEdition fills book-level audiobook fields from a
 // Hardcover edition, preferring Hardcover's deterministic edition data before
 // Audnex runs (#806). It only ever fills unknown fields — known values are
-// never overwritten ("unknown ⇒ don't clobber known"). It also makes sure an
-// audio-bearing book carries an audiobook MediaType so the Audnex path is
-// eligible. Returns whether it changed anything.
+// never overwritten ("unknown ⇒ don't clobber known"), and a field the user
+// locked is left alone even when empty, because clearing it was a manual edit
+// (#2757). It also makes sure an audio-bearing book carries an audiobook
+// MediaType so the Audnex path is eligible. Returns whether it changed anything.
 //
 // mediaTypePinned means the caller set MediaType deliberately (a list's
 // per-list format override): the promotion below must not run, or an
@@ -227,7 +228,7 @@ func deriveAudiobookMetadataFromEdition(book *models.Book, edition models.Editio
 		}
 	}
 
-	if book.Language == "" {
+	if book.Language == "" && !book.IsFieldLocked(models.BookFieldLanguage) {
 		if lang := strings.TrimSpace(edition.Language); lang != "" {
 			book.Language = lang
 			changed = true

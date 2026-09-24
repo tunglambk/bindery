@@ -1,0 +1,2 @@
+### Fixed
+- **A locked language survives Hardcover edition hydration** ([#2757](https://github.com/vavallee/bindery/issues/2757)): clearing a book's language by hand locks the field, and hydration was filling the empty value from the Hardcover audio edition anyway, so the provider's language came back on the next hydrate. A locked language now stays exactly as it was left, empty included, while an unlocked empty language is still filled from the edition.
