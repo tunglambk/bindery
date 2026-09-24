@@ -30,6 +30,10 @@ type User struct {
 	OIDCIssuer  *string
 	Email       *string
 	DisplayName *string
+	// RequestsAutoApprove makes this account's requests approve themselves
+	// instead of waiting in the admin queue (migration 090). Off unless an
+	// admin turns it on, so no existing account changes behaviour.
+	RequestsAutoApprove bool
 }
 
 func (u *User) IsAdmin() bool { return u.Role == auth.RoleAdmin }
@@ -48,13 +52,13 @@ func (r *UserRepo) Count(ctx context.Context) (int, error) {
 }
 
 const userSelectCols = `id, username, password_hash, role, created_at, updated_at,
-	oidc_sub, oidc_issuer, email, display_name, session_epoch`
+	oidc_sub, oidc_issuer, email, display_name, session_epoch, requests_auto_approve`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.CreatedAt, &u.UpdatedAt,
-		&u.OIDCSub, &u.OIDCIssuer, &u.Email, &u.DisplayName, &u.SessionEpoch,
+		&u.OIDCSub, &u.OIDCIssuer, &u.Email, &u.DisplayName, &u.SessionEpoch, &u.RequestsAutoApprove,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -563,6 +567,16 @@ func (r *UserRepo) SetRole(ctx context.Context, id int64, role string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetRequestsAutoApprove turns per-account request auto approval on or off
+// (migration 090). Only the admin user API reaches it. It changes what happens
+// to the account's next request, never to requests already in the queue.
+func (r *UserRepo) SetRequestsAutoApprove(ctx context.Context, id int64, enabled bool) error {
+	_, err := r.db.ExecContext(ctx,
+		"UPDATE users SET requests_auto_approve=?, updated_at=? WHERE id=?",
+		boolToInt(enabled), time.Now().UTC(), id)
+	return err
 }
 
 // PromoteFirstUser sets role='admin' on the user with the lowest id, if any.
