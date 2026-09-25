@@ -31,7 +31,7 @@ type User struct {
 	Email       *string
 	DisplayName *string
 	// RequestsAutoApprove makes this account's requests approve themselves
-	// instead of waiting in the admin queue (migration 090). Off unless an
+	// instead of waiting in the admin queue (migration 093). Off unless an
 	// admin turns it on, so no existing account changes behaviour.
 	RequestsAutoApprove bool
 }
@@ -277,6 +277,10 @@ var (
 	// teaching Delete about it.
 	ErrUserStillReferenced = errors.New("rows still reference this user")
 )
+
+// ErrUserNotFound is returned by a mutation aimed at a user id that does not
+// exist, so an admin typo is a 404 rather than a silent no-op.
+var ErrUserNotFound = errors.New("user not found")
 
 // UserDeleteStrategy says what happens to the rows a user owns when that user
 // is deleted (#1899).
@@ -570,13 +574,24 @@ func (r *UserRepo) SetRole(ctx context.Context, id int64, role string) error {
 }
 
 // SetRequestsAutoApprove turns per-account request auto approval on or off
-// (migration 090). Only the admin user API reaches it. It changes what happens
-// to the account's next request, never to requests already in the queue.
+// (migration 093). Only the admin user API reaches it. It changes what happens
+// to the account's next request, never to requests already in the queue. An
+// unknown id is ErrUserNotFound rather than a silent success.
 func (r *UserRepo) SetRequestsAutoApprove(ctx context.Context, id int64, enabled bool) error {
-	_, err := r.db.ExecContext(ctx,
+	res, err := r.db.ExecContext(ctx,
 		"UPDATE users SET requests_auto_approve=?, updated_at=? WHERE id=?",
 		boolToInt(enabled), time.Now().UTC(), id)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // PromoteFirstUser sets role='admin' on the user with the lowest id, if any.

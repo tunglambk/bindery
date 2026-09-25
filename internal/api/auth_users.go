@@ -242,6 +242,10 @@ func (h *UserManagementHandler) SetAutoApprove(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err := h.users.SetRequestsAutoApprove(r.Context(), id, body.Enabled); err != nil {
+		if errors.Is(err, db.ErrUserNotFound) {
+			writeErr(w, http.StatusNotFound, "No user with that id.")
+			return
+		}
 		writeServerError(w, r, err)
 		return
 	}

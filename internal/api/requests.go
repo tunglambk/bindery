@@ -540,7 +540,6 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeServerError(w, r, fmt.Errorf("reload reopened request: %w", err))
 			return
 		}
-		h.notifyCreated(ctx, *existing)
 		h.writeCreated(ctx, w, *existing, owner)
 		return
 	}
@@ -556,7 +555,6 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
-	h.notifyCreated(ctx, req.LibraryRequest)
 	h.writeCreated(ctx, w, req.LibraryRequest, owner)
 }
 
@@ -565,6 +563,9 @@ func (h *RequestHandler) Create(w http.ResponseWriter, r *http.Request) {
 // is the approved row. An auto approval that fails or is refused logs and
 // leaves the request pending, so a provider hiccup cannot lose what the
 // requester asked for; the admin queue still sees it.
+//
+// requestCreated is sent only when the request stays pending, so an admin is
+// not pinged for an item that was added without them (#2718).
 func (h *RequestHandler) writeCreated(ctx context.Context, w http.ResponseWriter, req models.LibraryRequest, owner int64) {
 	if h.autoApproveRequests(ctx, owner) {
 		switch done, status, msg, err := h.autoApprove(ctx, req, owner); {
@@ -573,9 +574,11 @@ func (h *RequestHandler) writeCreated(ctx context.Context, w http.ResponseWriter
 		case msg != "":
 			slog.Warn("requests: auto approval refused, leaving the request pending", "id", req.ID, "status", status, "reason", msg)
 		case done != nil:
-			req = *done
+			writeJSON(w, http.StatusCreated, toRequestResponse(*done, false))
+			return
 		}
 	}
+	h.notifyCreated(ctx, req)
 	writeJSON(w, http.StatusCreated, toRequestResponse(req, false))
 }
 
@@ -598,8 +601,20 @@ func (h *RequestHandler) autoApproveRequests(ctx context.Context, owner int64) b
 // automatic approval from a human one. The approval body is the approve form's
 // own starting point — search on add for a book, the ordinary catalogue sync
 // for an author — because there is no form to fill in.
+//
+// The claim carries the owner's daily auto-approve quota, drawn from the same
+// requests.max_pending_per_user limit as the pending cap: once the owner has
+// had that many requests auto approved since midnight UTC, the claim matches
+// nothing and the request stays pending, so the queue is the only way past the
+// quota just as it is when the setting is off. The count is part of the claim,
+// not a separate read, so a burst of creates cannot all pass it.
 func (h *RequestHandler) autoApprove(ctx context.Context, req models.LibraryRequest, owner int64) (*models.LibraryRequest, int, string, error) {
-	claimed, err := h.requests.Claim(ctx, req.ID, 0)
+	claimed, err := h.requests.ClaimAutoApprove(ctx, req.ID, owner, startOfUTCDay(time.Now()), h.maxPendingPerUser(ctx))
+	if errors.Is(err, db.ErrRequestAutoApproveQuota) {
+		// The request is left pending for an admin, exactly as it would be
+		// with the setting off. Not a failure, so no log and no refusal.
+		return nil, 0, "", nil
+	}
 	if err != nil {
 		return nil, 0, "", fmt.Errorf("claim request %d for auto approval: %w", req.ID, err)
 	}
@@ -611,6 +626,13 @@ func (h *RequestHandler) autoApprove(ctx context.Context, req models.LibraryRequ
 	}
 	search := claimed.Kind == models.RequestKindBook
 	return h.runClaimedApproval(ctx, claimed, approveBody{SearchOnAdd: &search})
+}
+
+// startOfUTCDay is midnight UTC of t's day, where the auto-approve quota
+// resets. UTC matches the timestamps the request rows are written with.
+func startOfUTCDay(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // builtRequest is a request row plus the payload it serialises.

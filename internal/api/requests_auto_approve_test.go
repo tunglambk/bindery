@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/vavallee/bindery/internal/models"
+	"github.com/vavallee/bindery/internal/notifier"
 )
 
 // Tests for per-account request auto approval (#2718). A requester account
@@ -213,6 +215,107 @@ func TestRequestsCreate_AutoApproveReopenedRequest(t *testing.T) {
 	}
 }
 
+// The daily quota is per account: once one requester has auto approved their
+// allowance, another account with the setting on still auto approves. It is
+// also the only brake on the path that removes the pending cap, so the count is
+// taken from the same requests.max_pending_per_user limit.
+func TestRequestsCreate_AutoApproveDailyQuota(t *testing.T) {
+	stub := wellsRequestStub()
+	stub.getBookByID["OL-SECOND"] = &models.Book{ForeignID: "OL-SECOND", Title: "Second"}
+	stub.getBookByID["OL-THIRD"] = &models.Book{ForeignID: "OL-THIRD", Title: "Third"}
+	adder := &fakeAdder{}
+	f := newRequestsFixture(t, stub, adder)
+	if err := f.settings.Set(context.Background(), SettingRequestsMaxPendingPerUser, "2"); err != nil {
+		t.Fatal(err)
+	}
+	setAutoApprove(t, f, f.requester.ID, true)
+	setAutoApprove(t, f, f.other.ID, true)
+
+	for _, id := range []string{"OL27482W", "OL-SECOND"} {
+		got := decodeRequest(t, f.create(t, f.requester, `{"kind":"book","foreignId":"`+id+`"}`))
+		if got.Status != models.RequestStatusApproved {
+			t.Fatalf("%s status %q, want approved while under the quota", id, got.Status)
+		}
+	}
+
+	// Past the quota the request falls back to the queue, exactly as it would
+	// with the setting off, and the adder is not run for it.
+	third := decodeRequest(t, f.create(t, f.requester, `{"kind":"book","foreignId":"OL-THIRD"}`))
+	if third.Status != models.RequestStatusPending {
+		t.Fatalf("request past the daily quota status %q, want pending", third.Status)
+	}
+	if n := adder.calls.Load(); n != 2 {
+		t.Fatalf("add core ran %d times, want 2 (the daily quota)", n)
+	}
+	row, err := f.requests.GetByID(context.Background(), third.ID)
+	if err != nil || row == nil {
+		t.Fatalf("reload the queued request: %v", err)
+	}
+	if row.Status != models.RequestStatusPending {
+		t.Fatalf("stored status past the quota %q, want pending", row.Status)
+	}
+
+	// The quota is per account, so another auto approving requester is
+	// unaffected by the first one having reached it.
+	if got := decodeRequest(t, f.create(t, f.other, `{"kind":"book","foreignId":"OL27482W"}`)); got.Status != models.RequestStatusApproved {
+		t.Fatalf("second requester status %q, want approved (the quota is per account)", got.Status)
+	}
+
+	// A human can still take the queued one, which is what "fall back to
+	// queuing" has to mean.
+	if rec := f.approve(f.admin, third.ID, `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("manual approval past the quota: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := adder.calls.Load(); n != 4 {
+		t.Fatalf("add core ran %d times, want 4 after the second requester and the manual approval", n)
+	}
+}
+
+// An auto approved request must not send requestCreated: the point of the
+// issue is that a household member's requests stop pinging the admin. The
+// audit trail is still there, because the approved row is in the queue.
+func TestRequestsCreate_AutoApproveSendsNoRequestCreated(t *testing.T) {
+	adder := &fakeAdder{}
+	f := newRequestsFixture(t, wellsRequestStub(), adder)
+	capture := &capturingNotifier{events: make(chan capturedEvent, 4)}
+	f.h.WithNotifier(capture)
+	setAutoApprove(t, f, f.requester.ID, true)
+
+	got := decodeRequest(t, f.create(t, f.requester, `{"kind":"book","foreignId":"OL27482W"}`))
+	if got.Status != models.RequestStatusApproved {
+		t.Fatalf("status %q, want approved", got.Status)
+	}
+	select {
+	case ev := <-capture.events:
+		t.Fatalf("auto approved request sent %s: %+v", ev.event, ev.payload)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Suppression tracks the request actually being approved, not the setting: a
+// request the auto approval leaves pending still sends requestCreated, so a
+// failed add is not silently invisible to the admin.
+func TestRequestsCreate_AutoApproveFailureStillNotifies(t *testing.T) {
+	adder := &fakeAdder{err: errors.New("provider exploded")}
+	f := newRequestsFixture(t, wellsRequestStub(), adder)
+	capture := &capturingNotifier{events: make(chan capturedEvent, 4)}
+	f.h.WithNotifier(capture)
+	setAutoApprove(t, f, f.requester.ID, true)
+
+	got := decodeRequest(t, f.create(t, f.requester, `{"kind":"book","foreignId":"OL27482W"}`))
+	if got.Status != models.RequestStatusPending {
+		t.Fatalf("status %q, want pending", got.Status)
+	}
+	select {
+	case ev := <-capture.events:
+		if ev.event != notifier.EventRequestCreated {
+			t.Fatalf("event = %q, want %q", ev.event, notifier.EventRequestCreated)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a request left pending by a failed auto approval sent no requestCreated event")
+	}
+}
+
 // The admin route sets the flag and the users list reports it.
 func TestUserMgmt_SetAutoApprove(t *testing.T) {
 	h, users := newUserMgmtFixture(t)
@@ -261,8 +364,8 @@ func TestUserMgmt_SetAutoApprove_BadRequests(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	h.SetAutoApprove(rec, jsonReqWithID(http.MethodPut, "/api/v1/auth/users/x/auto-approve", `{"enabled":true}`, 0, ctx))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unknown id status=%d, want 200 (no-op update); body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown id status=%d, want 404 (an admin typo must not report success); body=%s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()

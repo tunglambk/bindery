@@ -153,6 +153,7 @@ export default function UsersPage() {
 
       {loading && <p className="text-sm text-slate-500 dark:text-zinc-500">{t('common.loading')}</p>}
       {error && <p className="text-sm text-red-500">{error}</p>}
+      {!loading && <p className="text-xs text-slate-500 dark:text-zinc-500">{t('users.autoApproveHint')}</p>}
 
       {!loading && (
         <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-lg overflow-hidden">

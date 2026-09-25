@@ -932,13 +932,8 @@ func main() {
 			r.Post("/auth/session-secret/rotate", authHandler.RotateSessionSecret)
 			r.Put("/auth/oidc/providers", oidcHandler.SetProviders)
 			r.Put("/auth/mode", authHandler.SetMode)
-			r.Get("/auth/users", userMgmtHandler.List)
-			r.Post("/auth/users", userMgmtHandler.Create)
-			r.Delete("/auth/users/{id}", userMgmtHandler.Delete)
-			r.Put("/auth/users/{id}/role", userMgmtHandler.SetRole)
-			r.Put("/auth/users/{id}/auto-approve", userMgmtHandler.SetAutoApprove)
-			r.Put("/auth/users/{id}/reset-password", userMgmtHandler.ResetPassword)
 		})
+		registerUserAdminRoutes(r, userMgmtHandler)
 
 		// Metadata search
 		r.Get("/search/author", searchHandler.SearchAuthors)
