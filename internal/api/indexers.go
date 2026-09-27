@@ -536,6 +536,10 @@ func (h *IndexerHandler) SearchBook(w http.ResponseWriter, r *http.Request) {
 		// builds the QualityAllowed annotation below, so the book page's
 		// order and its approved flags come from one definition.
 		Profile: qualityProfile,
+		// The book's stored runtime lets the size term score an audio release
+		// by its density instead of its total size; zero keeps the flat bonus
+		// (#2740).
+		DurationSeconds: book.DurationSeconds,
 	}
 	if book.ReleaseDate != nil {
 		crit.Year = book.ReleaseDate.Year()
