@@ -239,9 +239,12 @@ func (h *RecommendationHandler) Add(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
-	// The recommendation carries the format the user is accepting it as, so
-	// hydration must not widen it to match whatever audio edition exists.
-	h.hydrateHardcoverEditions(r.Context(), book, true)
+	// A recommendation's format is not a user choice: the add request carries
+	// no body, and the recommender fills MediaType from the provider or falls
+	// back to ebook. Under the AddBook rule a provider or default derived
+	// format is not a pin, so hydration may widen it when Hardcover lists an
+	// audio edition.
+	h.hydrateHardcoverEditions(r.Context(), book, false)
 
 	fileFound := handleNewWantedBook(r.Context(), h.books, h.series, h.finder, *book, rec.AuthorName)
 

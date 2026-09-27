@@ -147,12 +147,13 @@ func TestRecommendationAddHydratesHardcoverEditions(t *testing.T) {
 	}
 }
 
-// TestRecommendationAddKeepsPinnedMediaType is the #2768 regression for the
-// recommendation path. The format stored on the recommendation is the one the
-// user is accepting, so hydration must not widen it to "both" when Hardcover
-// lists an audio edition. Before the fix the add path never forwarded the pin,
-// so an ebook recommendation came back "both" with the audiobook's ASIN.
-func TestRecommendationAddKeepsPinnedMediaType(t *testing.T) {
+// TestRecommendationAddWidensUnpinnedMediaType pins the #2768 rule on the
+// recommendation path. A recommendation's format is filled by the recommender
+// from the provider, or defaulted to ebook; the user never chose it, and the
+// add request carries no format. Under the AddBook rule that is not a pin, so
+// hydration must still widen an ebook recommendation to "both" and take the
+// audiobook's ASIN when Hardcover lists an audio edition.
+func TestRecommendationAddWidensUnpinnedMediaType(t *testing.T) {
 	database, err := db.OpenMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -217,14 +218,13 @@ func TestRecommendationAddKeepsPinnedMediaType(t *testing.T) {
 	if book == nil {
 		t.Fatal("recommended book was not created")
 	}
-	if book.MediaType != models.MediaTypeEbook {
-		t.Fatalf("MediaType = %q, want ebook (an add must not widen the recommendation's format)", book.MediaType)
+	if book.MediaType != models.MediaTypeBoth {
+		t.Fatalf("MediaType = %q, want both (a recommendation's format is not a pin, so hydration may widen it)", book.MediaType)
 	}
-	if book.ASIN != "" {
-		t.Fatalf("ASIN = %q, want empty on an ebook-pinned book", book.ASIN)
+	if book.ASIN != audioASIN {
+		t.Fatalf("ASIN = %q, want %q from the audio edition", book.ASIN, audioASIN)
 	}
-	// Hydration still ran, so the media type holding is the pin and not a
-	// skipped hydration.
+	// Hydration ran and stored the audio edition.
 	editions, err := editionRepo.ListByBook(ctx, book.ID)
 	if err != nil {
 		t.Fatal(err)
